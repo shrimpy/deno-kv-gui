@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "build:worker": "mkdir -p src-tauri/binaries && deno compile --unstable-kv --allow-read --allow-write --allow-env --allow-net --no-npm --exclude node_modules --target aarch64-apple-darwin --output src-tauri/binaries/kv-worker-aarch64-apple-darwin sidecar/main.ts",
     "tauri": "tauri",
-    "gui": "tauri",
+    "gui": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
