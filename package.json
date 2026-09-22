@@ -1,0 +1,26 @@
+{
+  "name": "deno-kv-gui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:worker": "mkdir -p src-tauri/binaries && deno compile --unstable-kv --allow-read --allow-write --allow-env --allow-net --no-npm --exclude node_modules --target aarch64-apple-darwin --output src-tauri/binaries/kv-worker-aarch64-apple-darwin sidecar/main.ts",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.5.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

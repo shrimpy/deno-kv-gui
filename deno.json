@@ -1,0 +1,9 @@
+{
+  "tasks": {
+    "check": "deno check sidecar/main.ts",
+    "test": "deno test --unstable-kv --allow-read --allow-write --allow-env --allow-net --allow-run sidecar/ shared/"
+  },
+  "compilerOptions": {
+    "strict": true
+  }
+}

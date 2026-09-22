@@ -4,37 +4,37 @@ overview: Build a native Mac app that browses and edits every Deno KV target —
 todos:
   - id: t1-shell
     content: "T1: Agent docs, Tauri + React shell, Deno worker ping"
-    status: in_progress
+    status: completed
   - id: t2-connections
     content: "T2: Connection records and macOS Keychain tokens"
-    status: pending
+    status: completed
   - id: t3-open
     content: "T3: Open and close local, memory, and remote KV targets"
-    status: pending
+    status: completed
   - id: t4-codec
     content: "T4: Tagged key/value codec and tests"
-    status: pending
+    status: completed
   - id: t5-crud
     content: "T5: list, exact lookup, create, update, delete"
-    status: pending
+    status: completed
   - id: t6-connections-ui
     content: "T6: Connections screen"
-    status: pending
+    status: completed
   - id: t7-browser
     content: "T7: Key browser, exact lookup, and entry editor"
-    status: pending
+    status: completed
   - id: t8-atomic
     content: "T8: Atomic writes, KvU64 mutations, production confirm"
-    status: pending
+    status: completed
   - id: t9-prefix
     content: "T9: Prefix export, import, and delete"
-    status: pending
+    status: completed
   - id: t10-deploy
     content: "T10: Deploy database picker and environment labels"
-    status: pending
+    status: completed
   - id: t11-bundle
     content: "T11: Notarized DMG with compiled Deno sidecar (not Mac App Store)"
-    status: pending
+    status: completed
 isProject: false
 ---
 
