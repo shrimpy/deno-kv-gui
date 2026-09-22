@@ -6,7 +6,7 @@ import {
   needsProductionConfirm,
   type Environment,
 } from "../shared/environment.ts";
-import { formatKey, tagPreview, type KeyPartTag, type Tag } from "../shared/tags.ts";
+import { formatKey, formatTag, tagPreview, type KeyPartTag, type Tag } from "../shared/tags.ts";
 import * as api from "./api.ts";
 import { draftFromTag, emptyDraft, tagFromDraft, type ValueDraft, type ValueKind } from "./draft.ts";
 import type { Connection, ConnectionKind, DatabaseDraft, KvEntry, UrlShape } from "./types.ts";
@@ -20,6 +20,8 @@ const ENVIRONMENTS: Environment[] = [
   "classic",
   "self-hosted",
 ];
+
+const PAGE_SIZE = 25;
 
 const VALUE_KINDS: ValueKind[] = [
   "string",
@@ -102,11 +104,14 @@ export function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
   const [tokenEdited, setTokenEdited] = useState(false);
-  const [prefix, setPrefix] = useState<KeyPartTag[]>([]);
+  const [filterParts, setFilterParts] = useState<KeyPartTag[]>([]);
+  const [appliedPrefix, setAppliedPrefix] = useState<KeyPartTag[]>([]);
   const [lookupKey, setLookupKey] = useState<KeyPartTag[]>([blankPart("string")]);
   const [entries, setEntries] = useState<KvEntry[]>([]);
   const [cursor, setCursor] = useState<KeyPartTag[] | null>(null);
   const [pageStart, setPageStart] = useState<KeyPartTag[] | null>(null);
+  const [pageStack, setPageStack] = useState<(KeyPartTag[] | null)[]>([null]);
+  const [editorOpen, setEditorOpen] = useState(false);
   const [editorKey, setEditorKey] = useState<KeyPartTag[]>([blankPart("string")]);
   const [draft, setDraft] = useState<ValueDraft>(emptyDraft());
   const [mode, setMode] = useState<"create" | "update">("create");
@@ -115,6 +120,7 @@ export function App() {
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  const [detail, setDetail] = useState<KvEntry | null>(null);
   const [deployMessage, setDeployMessage] = useState("");
   const [drafts, setDrafts] = useState<DatabaseDraft[]>([]);
   const [counterDelta, setCounterDelta] = useState("1");
@@ -153,17 +159,46 @@ export function App() {
     );
   }
 
+  async function confirmRecordChange(verb: "Update" | "Delete", key: KeyPartTag[]): Promise<boolean> {
+    if (!active) return false;
+    const label = formatKey(key);
+    if (needsProductionConfirm(active.environment)) {
+      return ask(
+        "Production database",
+        `${verb} ${label} in “${active.name}”. This changes the production database.`,
+        verb === "Delete" ? "Delete from production" : "Update production",
+      );
+    }
+    return ask(`${verb} record`, `${verb} ${label}?`, verb);
+  }
+
+  async function loadPage(prefixParts: KeyPartTag[], start: KeyPartTag[] | null) {
+    const result = await api.kvList({ prefix: prefixParts, start, limit: PAGE_SIZE });
+    setEntries(result.entries);
+    setCursor(result.cursor);
+    setPageStart(start);
+    setAppliedPrefix(prefixParts);
+    return result.entries.length;
+  }
+
   async function connectTo(connection: Connection) {
     setError("");
     setStatus("");
     try {
       await api.kvOpen(connection.id);
       setActiveId(connection.id);
-      setEntries([]);
-      setCursor(null);
-      setPageStart(null);
+      setFilterParts([]);
+      setAppliedPrefix([]);
+      setPageStack([null]);
+      setLookupKey([blankPart("string")]);
       setLookupNote("");
-      setStatus(`Connected to ${connection.name}`);
+      setEditorOpen(false);
+      setDetail(null);
+      setMode("create");
+      setVersionstamp(null);
+      setDraft(emptyDraft());
+      const count = await loadPage([], null);
+      setStatus(count === 0 ? `Connected to ${connection.name}. No records.` : `Connected to ${connection.name}.`);
     } catch (caught) {
       setActiveId(null);
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -179,6 +214,10 @@ export function App() {
     }
     setActiveId(null);
     setEntries([]);
+    setCursor(null);
+    setPageStack([null]);
+    setEditorOpen(false);
+    setDetail(null);
     setStatus("Disconnected");
   }
 
@@ -219,18 +258,41 @@ export function App() {
     await refreshConnections();
   }
 
-  async function browse(start: KeyPartTag[] | null) {
+  async function applyFilter() {
     if (!active) return;
     setError("");
+    setPageStack([null]);
     try {
-      const result = await api.kvList({ prefix, start, limit: 25 });
-      setEntries(result.entries);
-      setCursor(result.cursor);
-      setPageStart(start);
-      setStatus(result.entries.length === 0 ? "No keys on this page" : `${result.entries.length} keys`);
+      const count = await loadPage(filterParts, null);
+      setStatus(count === 0 ? "No records match this prefix" : `${count} records`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
+  }
+
+  async function showPage(start: KeyPartTag[] | null) {
+    if (!active) return;
+    setError("");
+    try {
+      const count = await loadPage(appliedPrefix, start);
+      setStatus(count === 0 ? "No records on this page" : `${count} records`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  function nextPage() {
+    if (!cursor) return;
+    const start = cursor;
+    setPageStack((stack) => [...stack, start]);
+    void showPage(start);
+  }
+
+  function previousPage() {
+    if (pageStack.length <= 1) return;
+    const nextStack = pageStack.slice(0, -1);
+    setPageStack(nextStack);
+    void showPage(nextStack[nextStack.length - 1] ?? null);
   }
 
   async function lookup() {
@@ -247,8 +309,8 @@ export function App() {
         setVersionstamp(null);
         return;
       }
-      loadEntry(result);
-      setLookupNote("");
+      beginUpdate(result);
+      setLookupNote(`Found ${formatKey(result.key)}`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -263,20 +325,31 @@ export function App() {
     setLookupNote("");
   }
 
+  function beginUpdate(entry: KvEntry) {
+    loadEntry(entry);
+    setEditorOpen(true);
+  }
+
   function startCreate() {
     setMode("create");
     setVersionstamp(null);
     setDraft(emptyDraft());
     setLookupNote("");
-    setEditorKey(lookupKey);
+    setEditorKey([blankPart("string")]);
+    setEditorOpen(true);
   }
 
   async function saveEntry() {
     if (!active) return;
     setError("");
     const creating = mode === "create";
-    const allowed = await guardWrite(creating ? "Create a key in" : "Update a key in");
-    if (!allowed) return;
+    if (creating) {
+      const allowed = await guardWrite("Create a key in");
+      if (!allowed) return;
+    } else {
+      const ok = await confirmRecordChange("Update", editorKey);
+      if (!ok) return;
+    }
     try {
       const value = tagFromDraft(draft);
       if (creating) {
@@ -295,28 +368,27 @@ export function App() {
         setVersionstamp(result.versionstamp);
         setStatus("Updated");
       }
-      await browse(pageStart);
+      await loadPage(appliedPrefix, pageStart);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message === "conflict" ? "This entry changed. Look it up again before saving." : message);
     }
   }
 
-  async function deleteEntry() {
+  async function deleteRecord(key: KeyPartTag[], stamp: string | null) {
     if (!active) return;
-    const allowed = await guardWrite("Delete a key from");
-    if (!allowed) return;
-    if (!needsProductionConfirm(active.environment)) {
-      const ok = await ask("Delete key", `Delete ${formatKey(editorKey)}?`, "Delete");
-      if (!ok) return;
-    }
+    const ok = await confirmRecordChange("Delete", key);
+    if (!ok) return;
     try {
-      const result = await api.kvDelete(editorKey, versionstamp);
+      const result = await api.kvDelete(key, stamp);
       setStatus(result.existed ? "Deleted" : "Key is already gone");
-      setMode("create");
-      setVersionstamp(null);
-      setDraft(emptyDraft());
-      await browse(pageStart);
+      if (JSON.stringify(editorKey) === JSON.stringify(key)) {
+        setMode("create");
+        setVersionstamp(null);
+        setDraft(emptyDraft());
+        setEditorOpen(false);
+      }
+      await loadPage(appliedPrefix, pageStart);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message === "conflict" ? "This entry changed. Look it up again before deleting." : message);
@@ -338,7 +410,7 @@ export function App() {
       const entry = await api.kvGet(editorKey);
       if (entry.found) loadEntry(entry);
       setStatus(`Applied ${type}`);
-      await browse(pageStart);
+      await loadPage(appliedPrefix, pageStart);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -347,7 +419,7 @@ export function App() {
   async function exportPrefix() {
     if (!active) return;
     try {
-      const result = await api.kvExportPrefix(prefix);
+      const result = await api.kvExportPrefix(appliedPrefix);
       const path = await save({ defaultPath: "kv-export.json", filters: [{ name: "JSON", extensions: ["json"] }] });
       if (!path) return;
       await api.writeTextFile(path, JSON.stringify({ version: 1, entries: result.entries }, null, 2));
@@ -369,7 +441,7 @@ export function App() {
       if (!Array.isArray(parsed.entries)) throw new Error("export file has no entries array");
       const result = await api.kvImportEntries(parsed.entries);
       setStatus(`Imported ${result.count} entries`);
-      await browse(pageStart);
+      await loadPage(appliedPrefix, pageStart);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -378,8 +450,8 @@ export function App() {
   async function deletePrefix() {
     if (!active) return;
     try {
-      const { count } = await api.kvCountPrefix(prefix);
-      const label = prefix.length === 0 ? "every key" : formatKey(prefix);
+      const { count } = await api.kvCountPrefix(appliedPrefix);
+      const label = appliedPrefix.length === 0 ? "every key" : formatKey(appliedPrefix);
       if (needsProductionConfirm(active.environment)) {
         const ok = await ask(
           "Production database",
@@ -391,9 +463,10 @@ export function App() {
         const ok = await ask("Delete prefix", `Delete ${count} entries under ${label}?`, "Delete");
         if (!ok) return;
       }
-      const result = await api.kvDeletePrefix(prefix);
+      const result = await api.kvDeletePrefix(appliedPrefix);
       setStatus(`Deleted ${result.count} entries`);
-      await browse(null);
+      setPageStack([null]);
+      await loadPage(appliedPrefix, null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -547,33 +620,23 @@ export function App() {
                 <button type="button" aria-label="Disconnect" onClick={() => void disconnect()}>Disconnect</button>
               </div>
               <section className="panel">
-                <h3>Lookup</h3>
-                <KeyEditor parts={lookupKey} onChange={setLookupKey} />
-                <button type="button" aria-label="Look up key" onClick={() => void lookup()}>Look up</button>
-                {lookupNote ? <p className="hint" role="status">{lookupNote}</p> : null}
-              </section>
-              <section className="panel">
-                <h3>Browse</h3>
-                <KeyEditor parts={prefix} onChange={setPrefix} allowEmpty />
-                <div className="row">
-                  <button type="button" aria-label="List keys" onClick={() => void browse(null)}>List</button>
-                  <button type="button" aria-label="Next page" onClick={() => void browse(cursor)} disabled={!cursor}>Next page</button>
-                  <button type="button" aria-label="Export prefix" onClick={() => void exportPrefix()}>Export prefix</button>
-                  <button type="button" aria-label="Import entries" onClick={() => void importPrefix()}>Import</button>
-                  <button type="button" aria-label="Delete prefix" onClick={() => void deletePrefix()}>Delete prefix</button>
+                <div className="find">
+                  <div>
+                    <h3>Filter</h3>
+                    <p className="hint">Prefix match. Leave empty to list every record.</p>
+                    <KeyEditor parts={filterParts} onChange={setFilterParts} allowEmpty name="filter" />
+                    <button type="button" aria-label="Filter records" onClick={() => void applyFilter()}>Filter</button>
+                  </div>
+                  <div>
+                    <h3>Look up</h3>
+                    <p className="hint">Exact key. A missing key is not created.</p>
+                    <KeyEditor parts={lookupKey} onChange={setLookupKey} name="lookup" />
+                    <button type="button" aria-label="Look up key" onClick={() => void lookup()}>Look up</button>
+                    {lookupNote ? <p className="hint" role="status">{lookupNote}</p> : null}
+                  </div>
                 </div>
-                <table>
-                  <thead><tr><th>Key</th><th>Value</th></tr></thead>
-                  <tbody>
-                    {entries.map((entry) => (
-                      <tr key={JSON.stringify(entry.key)} onClick={() => loadEntry(entry)}>
-                        <td>{formatKey(entry.key)}</td>
-                        <td>{entry.value ? tagPreview(entry.value) : ""}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               </section>
+              {editorOpen ? (
               <section className="panel">
                 <div className="row">
                   <h3>{mode === "create" ? "Create entry" : "Update entry"}</h3>
@@ -589,7 +652,7 @@ export function App() {
                 {versionstamp ? <p className="hint">versionstamp {versionstamp}</p> : null}
                 <div className="row">
                   <button type="button" aria-label={mode === "create" ? "Create entry" : "Update entry"} onClick={() => void saveEntry()}>{mode === "create" ? "Create" : "Update"}</button>
-                  {mode === "update" ? <button type="button" aria-label="Delete entry" onClick={() => void deleteEntry()}>Delete</button> : null}
+                  {mode === "update" ? <button type="button" aria-label="Delete entry" onClick={() => void deleteRecord(editorKey, versionstamp)}>Delete</button> : null}
                 </div>
                 {mode === "update" && draft.kind === "u64" ? (
                   <div className="row">
@@ -600,10 +663,55 @@ export function App() {
                   </div>
                 ) : null}
               </section>
+              ) : null}
+              <section className="panel">
+                <div className="row">
+                  <h3>Records</h3>
+                  <button type="button" aria-label="Previous page" onClick={previousPage} disabled={pageStack.length <= 1}>Previous</button>
+                  <button type="button" aria-label="Next page" onClick={nextPage} disabled={!cursor}>Next</button>
+                  <button type="button" aria-label="New entry" onClick={startCreate}>New entry</button>
+                  <button type="button" aria-label="Export prefix" onClick={() => void exportPrefix()}>Export</button>
+                  <button type="button" aria-label="Import entries" onClick={() => void importPrefix()}>Import</button>
+                  <button type="button" aria-label="Delete prefix" onClick={() => void deletePrefix()}>Delete prefix</button>
+                </div>
+                <p className="hint">{entries.length === 0 ? "No records on this page." : `${entries.length} on this page.`}{appliedPrefix.length > 0 ? ` Prefix ${formatKey(appliedPrefix)}.` : ""} Double-click a row, or use Detail, to see the full value.</p>
+                <table>
+                  <thead><tr><th>Key</th><th>Value</th><th>Versionstamp</th><th>Actions</th></tr></thead>
+                  <tbody>
+                    {entries.map((entry) => {
+                      const label = formatKey(entry.key);
+                      return (
+                        <tr key={JSON.stringify(entry.key)} onDoubleClick={() => setDetail(entry)}>
+                          <td>{label}</td>
+                          <td>{entry.value ? tagPreview(entry.value) : ""}</td>
+                          <td className="stamp">{entry.versionstamp ?? ""}</td>
+                          <td className="actions" onDoubleClick={(event) => event.stopPropagation()}>
+                            <button type="button" aria-label={`Detail ${label}`} onClick={() => setDetail(entry)}>Detail</button>
+                            <button type="button" aria-label={`Update ${label}`} onClick={() => beginUpdate(entry)}>Update</button>
+                            <button type="button" aria-label={`Delete ${label}`} onClick={() => void deleteRecord(entry.key, entry.versionstamp)}>Delete</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </section>
             </>
           )}
         </main>
       </div>
+      {detail ? (
+        <div className="modal" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+          <div className="dialog detail">
+            <h3 id="detail-title">{formatKey(detail.key)}</h3>
+            <p className="hint">versionstamp {detail.versionstamp ?? "none"}</p>
+            <pre className="detail-body">{detail.value ? formatTag(detail.value) : ""}</pre>
+            <div className="row">
+              <button type="button" aria-label="Close detail" onClick={() => setDetail(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {confirm ? (
         <div className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
           <div className="dialog">
@@ -624,10 +732,12 @@ function KeyEditor({
   parts,
   onChange,
   allowEmpty = false,
+  name = "key",
 }: {
   parts: KeyPartTag[];
   onChange: (parts: KeyPartTag[]) => void;
   allowEmpty?: boolean;
+  name?: string;
 }) {
   function update(index: number, part: KeyPartTag) {
     onChange(parts.map((current, currentIndex) => currentIndex === index ? part : current));
@@ -661,10 +771,10 @@ function KeyEditor({
               }}
             />
           )}
-          <button type="button" aria-label="Remove key part" onClick={() => onChange(parts.filter((_, currentIndex) => currentIndex !== index))}>Remove</button>
+          <button type="button" aria-label={`Remove ${name} part`} onClick={() => onChange(parts.filter((_, currentIndex) => currentIndex !== index))}>Remove</button>
         </div>
       ))}
-      <button type="button" aria-label="Add key part" onClick={() => onChange([...parts, blankPart("string")])}>Add key part</button>
+      <button type="button" aria-label={`Add ${name} part`} onClick={() => onChange([...parts, blankPart("string")])}>Add key part</button>
     </div>
   );
 }

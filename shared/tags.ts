@@ -73,36 +73,42 @@ export function tagToJson(tag: Tag): unknown {
   }
 }
 
-export function tagPreview(tag: Tag, max = 80): string {
-  const text = previewInner(tag);
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
-function previewInner(tag: Tag): string {
+function toDisplay(tag: Tag): unknown {
   switch (tag.t) {
     case "null":
-      return "null";
+      return null;
     case "string":
-      return JSON.stringify(tag.v);
     case "number":
     case "boolean":
-      return String(tag.v);
+      return tag.v;
     case "bigint":
       return `${tag.v}n`;
     case "u64":
-      return `u64:${tag.v}`;
+      return `KvU64(${tag.v})`;
     case "bytes":
-      return `bytes:${tag.v}`;
+      return `bytes(${tag.v})`;
     case "date":
       return tag.v;
     case "array":
-    case "object":
-      try {
-        return JSON.stringify(tagToJson(tag));
-      } catch {
-        return JSON.stringify(tag);
-      }
+      return tag.v.map(toDisplay);
+    case "object": {
+      const out: Record<string, unknown> = {};
+      for (const [key, inner] of Object.entries(tag.v)) out[key] = toDisplay(inner);
+      return out;
+    }
   }
+}
+
+export function formatTag(tag: Tag): string {
+  if (tag.t === "string") return tag.v;
+  if (tag.t === "array" || tag.t === "object") return JSON.stringify(toDisplay(tag), null, 2);
+  const display = toDisplay(tag);
+  return display === null ? "null" : String(display);
+}
+
+export function tagPreview(tag: Tag, max = 80): string {
+  const text = formatTag(tag);
+  return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
 export function formatKey(parts: KeyPartTag[]): string {
